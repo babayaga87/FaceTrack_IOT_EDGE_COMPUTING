@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Môi trường ảo (Virtual Environment)
+.venv/
+venv/
+env/
+bin/
+lib/
+share/
+
+# Dữ liệu ảnh (Dataset)
+# Chặn toàn bộ folder dataset vì ảnh chiếm dung lượng lớn và mang tính cá nhân
+dataset/
+
+# OS files
+.DS_Store
+Thumbs.db
