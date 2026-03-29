@@ -1,2 +1,18 @@
 opencv-python
 mediapipe
+
+# Cập nhật apt
+sudo apt update
+sudo apt upgrade -y
+
+# Cài Python 3 và pip
+sudo apt install python3 python3-pip python3-venv libgl1 -y
+
+#Tạo virtual environment (khuyến nghị)
+python3 -m venv venv
+source venv/bin/activate
+
+pip install opencv-python-headless mediapipe numpy
+
+
+python main_gui.py
