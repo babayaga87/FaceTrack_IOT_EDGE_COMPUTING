@@ -8,12 +8,12 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # --- CONFIG ---
-SERVER_URL = "http://<ĐỊA_CHỈ_IP_SERVER_CỦA_BẠN>:8001/api/attendance/process"
+SERVER_URL = "http://localhost:8001/api/attendance/process"
 MODEL_FILE = 'face_detector.tflite'
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
 
 # Điều kiện cấu hình
-MIN_FACE_AREA_RATIO = 0.15  # Tỷ lệ khuôn mặt
+MIN_FACE_AREA_RATIO = 0.1  # Tỷ lệ khuôn mặt 
 HOLD_TIME_SECONDS = 1.0    # Giữ mặt trong 1 giây
 
 # --- TU DONG TAI MODEL ---
@@ -73,30 +73,51 @@ while cap.isOpened():
         )
         
         bbox = largest_detection.bounding_box
+        
+        # GIỮ NGUYÊN CODE TÍNH TOÁN BOUNDING BOX CỦA BẠN:
+        # 1. Lấy thông số gốc
         x, y, w, h = int(bbox.origin_x), int(bbox.origin_y), int(bbox.width), int(bbox.height)
-        face_area = w * h
+        face_area = w * h # Tính diện tích mặt gốc để so sánh tỷ lệ
 
-        # 1. Kiểm tra điều kiện diện tích (> 70%)
+        # 2. Định nghĩa độ mở rộng (Padding)
+        # Tăng padding_top để lấy hết tóc, giảm padding_bottom để bớt vai
+        padding_top = int(h * 0.5)     # Mở rộng mạnh lên phía trên (tóc)
+        padding_bottom = int(h * 0.1)  # Mở rộng rất ít xuống dưới (hạn chế vai)
+        padding_side = int(w * 0.2)    # Mở rộng vừa phải sang hai bên
+
+        # 3. Tính toán tọa độ mới
+        new_x = x - padding_side
+        new_y = y - padding_top
+        new_w = w + (2 * padding_side)
+        new_h = h + padding_top + padding_bottom
+
+        # 4. Giới hạn không để khung văng ra ngoài ảnh
+        new_x = max(0, new_x)
+        new_y = max(0, new_y)
+        new_w = min(new_w, img_w - new_x)
+        new_h = min(new_h, img_h - new_y)
+
+        # 5. Cắt khung hình để chuẩn bị gửi server
+        face_to_send = frame[new_y:new_y+new_h, new_x:new_x+new_w]
+
+        # --- BẮT ĐẦU KIỂM TRA CÁC ĐIỀU KIỆN ---
+        # Điều kiện 1: Kiểm tra diện tích (so sánh diện tích mặt gốc với diện tích camera)
         if (face_area / frame_area) >= MIN_FACE_AREA_RATIO:
-            # 2. Kiểm tra điều kiện nhìn trực diện
+            # Điều kiện 2: Kiểm tra nhìn trực diện
             if is_looking_straight(largest_detection.keypoints):
                 has_valid_face_in_current_frame = True
                 
-                # Cắt ảnh với padding như cũ
-                pad_t, pad_b, pad_s = int(h * 0.5), int(h * 0.1), int(w * 0.2)
-                nx, ny = max(0, x - pad_s), max(0, y - pad_t)
-                nw, nh = min(img_w - nx, w + 2*pad_s), min(img_h - ny, h + pad_t + pad_b)
-                face_to_send = frame[ny:ny+nh, nx:nx+nw]
-                
-                # Vẽ khung màu xanh dương báo hiệu đạt chuẩn
-                cv2.rectangle(frame, (nx, ny), (nx+nw, ny+nh), (255, 0, 0), 2)
-                cv2.putText(frame, "Hop le! Giu nguyen...", (nx, ny-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2)
+                # Vẽ khung màu xanh dương báo hiệu đạt chuẩn (Vẽ theo box đã padding giống code cũ)
+                cv2.rectangle(frame, (new_x, new_y), (new_x + new_w, new_y + new_h), (255, 0, 0), 2)
+                cv2.putText(frame, "Hop le! Giu nguyen...", (new_x, new_y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,0,0), 2)
             else:
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
-                cv2.putText(frame, "Vui long nhin thang", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+                # Lỗi: Không nhìn thẳng -> Vẽ khung đỏ
+                cv2.rectangle(frame, (new_x, new_y), (new_x + new_w, new_y + new_h), (0, 0, 255), 2)
+                cv2.putText(frame, "Vui long nhin thang", (new_x, new_y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
         else:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
-            cv2.putText(frame, "Tien lai gan hon", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+            # Lỗi: Ở quá xa -> Vẽ khung đỏ
+            cv2.rectangle(frame, (new_x, new_y), (new_x + new_w, new_y + new_h), (0, 0, 255), 2)
+            cv2.putText(frame, "Tien lai gan hon", (new_x, new_y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
 
     # --- LOGIC THỜI GIAN & GỬI SERVER ---
     if has_valid_face_in_current_frame:
