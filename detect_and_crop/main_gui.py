@@ -4,14 +4,15 @@ import urllib.request
 import time
 import requests
 import threading
-import tkinter as tk                       # Thêm thư viện giao diện đồ họa
-from tkinter import simpledialog           # Thêm thư viện tạo hộp thoại Popup
+import numpy as np                         # Sử dụng ma trận phẳng numpy cố định
+import tkinter as tk                       
+from tkinter import simpledialog           
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # =====================================================================
-# ===== USB CAMERA CLASS (BỘ ĐỌC CAM MẠNH MẼ CỦA BẠN) =====
+# ===== USB CAMERA CLASS (BỘ ĐỌC GỐC CHẠY ỔN ĐỊNH CỦA BẠN) =====
 # =====================================================================
 class UsbCamera:
     def __init__(self):
@@ -25,7 +26,6 @@ class UsbCamera:
             self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         if height > 0:
             self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        # Ép định dạng mã hóa MJPG để không bị lỗi timeout phần cứng trên WSL/Pi
         self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return True
@@ -42,7 +42,6 @@ class UsbCamera:
                 self.last_error = "Failed to apply options"
                 self.close_device()
                 return False
-            # Warmup camera
             frame = None
             for _ in range(5):
                 ret, frame = self.capture.read()
@@ -82,19 +81,16 @@ class UsbCamera:
         return self.last_error
 
 # =====================================================================
-# ===== HỆ THỐNG ĐIỀU KHIỂN & CẤU HÌNH API ĐỒNG BỘ 100% =====
+# ===== CẤU HÌNH HỆ THỐNG API =====
 # =====================================================================
-# Khớp cổng 8000 và trỏ chính xác về endpoint /api/students của file main.py
-REGISTER_URL = "http://127.0.0.1:8002/api/students"  
-SERVER_URL = "http://127.0.0.1:8002/api/students"
-
+SERVER_URL = "http://172.20.10.3:8001/api/attendance/process" 
+REGISTER_URL = "http://172.20.10.3:8000/api/students"          
 MODEL_FILE = 'face_detector.tflite'
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
 
 MIN_FACE_AREA_RATIO = 0.05  
 HOLD_TIME_SECONDS = 1.5     
 
-# --- CÁC BIẾN QUẢN LÝ TRẠNG THÁI TOÀN CỤC ---
 face_start_time = None
 face_processed = False
 is_sending = False  
@@ -122,10 +118,10 @@ def send_to_server_async(image_data):
     try:
         res = requests.post(SERVER_URL, files=files, timeout=10)
         data = res.json()
-        student_name = data.get("full_name", data.get("name", "Unknown"))
+        student_name = data.get("full_name", "Unknown")
         student_id = data.get("student_id", "Unknown")
     except:
-        student_name = "Loi Server"
+        student_name = "Server Error"
         student_id = ""
     is_sending = False
     face_processed = True 
@@ -133,15 +129,9 @@ def send_to_server_async(image_data):
 def upload_registration_packet_async():
     global is_registering, register_message, captured_images_buffer, REG_ID, REG_NAME
     is_registering = True
-    register_message = "Dang xu ly AI..."
+    register_message = "Analyzing face..."
     
-    # Ép kiểu string tường minh để FastAPI Form(...) nhận diện chính xác
-    payload = {
-        'full_name': str(REG_NAME).strip(), 
-        'student_id': str(REG_ID).strip()
-    }
-    
-    # Khóa key gửi file ảnh phải đặt tên chính xác là 'images' trùng khớp với main.py
+    payload = {'full_name': REG_NAME, 'student_id': REG_ID}
     files = []
     for i, img_bytes in enumerate(captured_images_buffer):
         files.append(('images', (f"face_{i}.jpg", img_bytes, 'image/jpeg')))
@@ -149,21 +139,17 @@ def upload_registration_packet_async():
     try:
         res = requests.post(REGISTER_URL, data=payload, files=files, timeout=25)
         if res.status_code == 200:
-            register_message = "Dang ky THANH CONG!"
-            print(f">>>> Đăng ký thành công: {REG_NAME} ({REG_ID})")
+            register_message = "Success!"
             REG_ID = ""
             REG_NAME = ""
             captured_images_buffer = []
         else:
-            try: 
-                err_detail = res.json().get('detail', 'Tu choi')
-            except: 
-                err_detail = f"Code {res.status_code}"
-            register_message = f"That bai: {err_detail}"
+            try: err_detail = res.json().get('detail', 'Tu choi')
+            except: err_detail = "DB Error"
+            register_message = f"Error: {err_detail}"
             captured_images_buffer = [] 
-    except Exception as e:
-        register_message = "Loi ket noi!"
-        print(f"Lỗi chi tiết: {str(e)}")
+    except:
+        register_message = "Error: Network Error"
         captured_images_buffer = []
     is_registering = False
 
@@ -174,17 +160,17 @@ def draw_beautiful_box(img, pt1, pt2, color, thickness, r, d):
     cv2.line(img, (x1, y1 + r), (x1, y1 + r + d), color, thickness)
     cv2.ellipse(img, (x1 + r, y1 + r), (r, r), 180, 0, 90, color, thickness)
     cv2.line(img, (x2 - r, y1), (x2 - r - d, y1), color, thickness)
-    cv2.line(img, (x2, y1 + r), (x2, y1 + r + d), color, thickness)
-    cv2.ellipse(img, (x2 - r, y1 + r), (r, r), 270, 0, 90, color, thickness)
-    cv2.line(img, (x1 + r, y2), (x1 + r + d, y2), color, thickness)
     cv2.line(img, (x1, y2 - r), (x1, y2 - r - d), color, thickness)
     cv2.ellipse(img, (x1 + r, y2 - r), (r, r), 90, 0, 90, color, thickness)
+    cv2.line(img, (x1 + r, y2), (x1 + r + d, y2), color, thickness)
+    cv2.line(img, (x2, y1 + r), (x2, y1 + r + d), color, thickness)
+    cv2.ellipse(img, (x2 - r, y1 + r), (r, r), 270, 0, 90, color, thickness)
     cv2.line(img, (x2 - r, y2), (x2 - r - d, y2), color, thickness)
     cv2.line(img, (x2, y2 - r), (x2, y2 - r - d), color, thickness)
     cv2.ellipse(img, (x2 - r, y2 - r), (r, r), 0, 0, 90, color, thickness)
 
 # =====================================================================
-# ===== MAIN LOOP RUNNER =====
+# ===== CHƯƠNG TRÌNH CHÍNH =====
 # =====================================================================
 def main():
     global face_start_time, face_processed, is_sending, student_name, student_id
@@ -203,18 +189,32 @@ def main():
         print("Cannot open camera:", cam.get_last_error())
         return
 
-    print("Hệ thống UI/UX tích hợp Popup Đăng ký đã sẵn sàng vận hành!")
+    # 💡 CẤU HÌNH FIX CỨNG THEO ĐỘ PHÂN GIẢI PHẦN CỨNG 800x480
+    win_w = 800
+    win_h = 480
+    cam_w = 480  # Camera dạng vuông chiếm lề trái (480x480)
+    panel_w = 320 # Cột thông tin chiếm lề phải (320x480)
+
+    window_name = 'UIT Checkin System'
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL) 
+    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN) # Đẩy tràn viền màn hình Ras
 
     while True:
         success, frame = cam.read_frame()
         if not success or frame is None: break
 
-        panel_w = 320
-        interface = cv2.copyMakeBorder(frame, 0, 0, 0, panel_w, cv2.BORDER_CONSTANT, value=(30, 30, 30))
-        img_h, img_w, _ = frame.shape
-        frame_area = img_w * img_h
+        # 1. TẠO KHUNG NỀN MÀU XÁM TỐI VỪA KHÍT 800x480 PIXELS
+        interface = np.zeros((win_h, win_w, 3), dtype=np.uint8) + 28 
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # 2. XỬ LÝ ẢNH CAMERA: Resize và cắt gọn thành hình vuông 480x480 đưa vào bên trái
+        frame_resized = cv2.resize(frame, (640, 480))
+        frame_square = frame_resized[0:480, 80:560] # Cắt bớt lề thừa 2 bên để giữ tỉ lệ 1:1 không móp hình
+        interface[0:win_h, 0:cam_w] = frame_square
+
+        frame_area = cam_w * win_h
+
+        # Nhận diện khuôn mặt trên vùng ảnh vuông camera
+        rgb = cv2.cvtColor(frame_square, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = detector.detect(mp_image)
 
@@ -227,30 +227,31 @@ def main():
             bbox = largest_detection.bounding_box
             x, y, w, h = int(bbox.origin_x), int(bbox.origin_y), int(bbox.width), int(bbox.height)
             
-            padding_top, padding_bottom, padding_side = int(h * 0.5), int(h * 0.1), int(w * 0.2)    
+            padding_top, padding_bottom, padding_side = int(h * 0.45), int(h * 0.1), int(w * 0.18)    
             new_x = max(0, x - padding_side)
             new_y = max(0, y - padding_top)
-            new_w = min(w + (2 * padding_side), img_w - new_x)
-            new_h = min(h + padding_top + padding_bottom, img_h - new_y)
-            face_to_send = frame[new_y:new_y+new_h, new_x:new_x+new_w]
+            new_w = min(w + (2 * padding_side), cam_w - new_x)
+            new_h = min(h + padding_top + padding_bottom, win_h - new_y)
+            
+            # Tính toán scale ngược lại để trích xuất ảnh gốc chất lượng cao gửi Server
+            scale_x = frame.shape[1] / 640
+            scale_y = frame.shape[0] / 480
+            real_x = int((new_x + 80) * scale_x)
+            real_y = int(new_y * scale_y)
+            face_to_send = frame[real_y:int((new_y+new_h)*scale_y), real_x:int((new_x+new_w+80)*scale_x)]
 
             if (w * h / frame_area) >= MIN_FACE_AREA_RATIO:
                 if is_looking_straight(largest_detection.keypoints):
                     has_valid_face_in_current_frame = True
-                    
                     if len(captured_images_buffer) > 0 or is_registering: color = (255, 0, 255)
                     elif is_sending: color = (0, 165, 255)
                     elif face_processed: color = (0, 255, 0)
                     else: color = (255, 255, 0)
-                    
-                    draw_beautiful_box(interface, (new_x, new_y), (new_x + new_w, new_y + new_h), color, 2, 15, 10)
+                    draw_beautiful_box(interface, (new_x, new_y), (new_x + new_w, new_y + new_h), color, 2, 12, 8)
                 else:
-                    draw_beautiful_box(interface, (new_x, new_y), (new_x + new_w, new_y + new_h), (0, 0, 255), 2, 15, 10)
-                    cv2.putText(interface, "Vui long nhin thang", (new_x, new_y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
-            else:
-                draw_beautiful_box(interface, (new_x, new_y), (new_x + new_w, new_y + new_h), (0, 0, 255), 2, 15, 10)
-                cv2.putText(interface, "Hay tien lai gan camera", (new_x, new_y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
+                    draw_beautiful_box(interface, (new_x, new_y), (new_x + new_w, new_y + new_h), (0, 0, 255), 2, 12, 8)
 
+        # Logic tính tiến trình điểm danh tự động
         if has_valid_face_in_current_frame and len(captured_images_buffer) == 0:
             if not face_processed and not is_sending:
                 if face_start_time is None: face_start_time = time.time()
@@ -262,78 +263,89 @@ def main():
         elif not has_valid_face_in_current_frame:
             face_start_time = None
             face_processed = False
-            student_name = ""
-            student_id = ""
-            if register_message and "thành công" in register_message.lower(): register_message = ""
 
-        bar_y = img_h - 20
-        cv2.rectangle(interface, (30, bar_y), (img_w - 30, bar_y + 8), (50, 50, 50), -1)
+        # Vẽ thanh tải Progress Bar dưới đáy khung ảnh camera (y = 468)
+        bar_y = win_h - 12
+        cv2.rectangle(interface, (15, bar_y), (cam_w - 15, bar_y + 4), (50, 50, 50), -1)
         if progress_ratio > 0:
-            cv2.rectangle(interface, (30, bar_y), (30 + int((img_w - 60) * progress_ratio), bar_y + 8), (0, 255, 0), -1)
+            cv2.rectangle(interface, (15, bar_y), (15 + int((cam_w - 30) * progress_ratio), bar_y + 4), (0, 255, 0), -1)
 
-        px = img_w + 20
-        cv2.putText(interface, "MAY DIEM DANH UIT", (px, 40), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 2)
-        cv2.line(interface, (px, 55), (px + 280, 55), (100, 100, 100), 1)
+        # =====================================================================
+        # 💡 THIẾT KẾ CỘT SIDE PANEL BÊN PHẢI (CHIỀU NGANG TỪ 480 ĐẾN 800)
+        # =====================================================================
+        px = cam_w + 20    # Điểm lề trái bắt đầu của Panel chữ (Pixel 500)
+        font_scale = 0.52  # Kích thước font chữ cực kỳ nét cho màn hình 800x480
+        spacing_y = 48     # Dãn dòng cách đều 48px
 
-        cv2.putText(interface, "STATUS LOG:", (px, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-        if is_sending: cv2.putText(interface, "Processing...", (px, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-        elif face_processed:
-            cv2.putText(interface, "DA GHI NHAN!", (px, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            cv2.putText(interface, f"SV: {student_name}", (px, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-            cv2.putText(interface, f"MSSV: {student_id}", (px, 185), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        else: cv2.putText(interface, "Scanning...", (px, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
-
-        cv2.line(interface, (px, 215), (px + 280, 215), (60, 60, 60), 1)
-
-        cv2.putText(interface, "MODE REGISTRATION:", (px, 245), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-        if REG_ID and REG_NAME:
-            cv2.putText(interface, f"Target: {REG_ID}", (px, 275), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-            cv2.putText(interface, f"Buffer: {len(captured_images_buffer)} / 5 Pics", (px, 305), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 0, 255), 1)
-            if register_message: cv2.putText(interface, register_message, (px, 335), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        else: cv2.putText(interface, "IDLE (An R de dang ky)", (px, 275), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 100, 100), 1)
-
-        cv2.line(interface, (px, 365), (px + 280, 365), (60, 60, 60), 1)
-        cv2.putText(interface, "GUIDE MENU:", (px, 390), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
-        cv2.rectangle(interface, (px, 410), (px + 40, 435), (255, 0, 255), -1)
-        cv2.putText(interface, "R", (px + 13, 429), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-        cv2.putText(interface, "Dang ky nguoi moi", (px + 55, 427), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.rectangle(interface, (px, 445), (px + 40, 470), (50, 50, 50), -1)
-        cv2.putText(interface, "ESC", (px + 4, 464), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        cv2.putText(interface, "Thoat phan mem", (px + 55, 462), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-
-        cv2.imshow('He thong Diem danh UIT', interface)
+        # Dòng 1: Tiêu đề
+        curr_y = 45
+        cv2.putText(interface, "UIT Checkin System", (px, curr_y), cv2.FONT_HERSHEY_DUPLEX, font_scale * 1.1, (255, 255, 255), 1)
+        cv2.line(interface, (px, curr_y + 12), (win_w - 20, curr_y + 12), (80, 80, 80), 1)
         
-        key = cv2.waitKey(30) & 0xFF
+        # Dòng 2: Nhật ký điểm danh
+        curr_y += spacing_y + 15
+        cv2.putText(interface, "STATUS LOG:", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.9, (150, 150, 150), 1)
+        curr_y += spacing_y - 10
+        if is_sending: cv2.putText(interface, "Processing...", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.05, (0, 165, 255), 1)
+        elif face_processed:
+            cv2.putText(interface, "Recorded!", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.05, (0, 255, 0), 1)
+            curr_y += 30
+            cv2.putText(interface, f"SV: {student_name[:12]}", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
+            curr_y += 25
+            cv2.putText(interface, f"ID: {student_id}", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
+            curr_y -= 55 # Bù dòng để không lệch spacing bên dưới
+        else: cv2.putText(interface, "Scanning...", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 1.05, (200, 200, 200), 1)
+
+        # Dòng 3: Tiến trình khu vực đăng ký mới
+        curr_y = 240
+        cv2.line(interface, (px, curr_y - 15), (win_w - 20, curr_y - 15), (60, 60, 60), 1)
+        cv2.putText(interface, "REGISTRATION:", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.9, (150, 150, 150), 1)
+        curr_y += spacing_y - 10
+        if REG_ID and REG_NAME:
+            cv2.putText(interface, f"Target: {REG_ID}", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
+            curr_y += 30
+            cv2.putText(interface, f"Buf: {len(captured_images_buffer)}/5 Pics", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 0, 255), 1)
+            if register_message:
+                curr_y += 30
+                cv2.putText(interface, register_message, (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), 1)
+        else:
+            cv2.putText(interface, "IDLE (Press R)", (px, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (110, 110, 110), 1)
+
+        # Dòng cuối cùng: Menu hướng dẫn ghim sát góc đáy lề phải
+        cv2.line(interface, (px, win_h - 75), (win_w - 20, win_h - 75), (50, 50, 50), 1)
+        cv2.putText(interface, "[R] Register New User", (px, win_h - 45), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.9, (160, 160, 160), 1)
+        cv2.putText(interface, "[ESC] Exit Application", (px, win_h - 20), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.9, (160, 160, 160), 1)
+
+        # Kết xuất toàn bộ ma trận ra màn hình chuẩn 800x480
+        cv2.imshow(window_name, interface)
+        
+        key = cv2.waitKey(15) & 0xFF
         if key == 27: break
         elif key == ord('r') or key == ord('R'):
             if not REG_ID or not REG_NAME:
                 root = tk.Tk()
                 root.withdraw()
                 root.attributes("-topmost", True)
-                
-                input_id = simpledialog.askstring("ĐĂNG KÝ SINH VIÊN", "Nhập Mã số sinh viên (MSSV):")
-                input_name = simpledialog.askstring("ĐĂNG KÝ SINH VIÊN", "Nhập Họ và Tên sinh viên:")
+                input_id = simpledialog.askstring("REGISTRATION", "Enter Student ID:")
+                input_name = simpledialog.askstring("REGISTRATION", "Enter Student Full Name:")
                 root.destroy()
                 
                 if not input_id or not input_name:
                     REG_ID = ""
                     REG_NAME = ""
-                    register_message = "Loi: Thong tin trong!"
+                    register_message = "Missing information!"
                 else:
                     REG_ID = input_id.strip()
                     REG_NAME = input_name.strip()
-                    register_message = "An R de chup anh thu 1..."
+                    register_message = "Press R to capture"
                     captured_images_buffer = []
             else:
-                # Nhấn R liên tục 5 lần để chụp đủ ảnh đẩy thẳng lên Server
                 if has_valid_face_in_current_frame and len(captured_images_buffer) < 5 and not is_registering:
                     _, img_encoded = cv2.imencode('.jpg', face_to_send)
                     captured_images_buffer.append(img_encoded.tobytes())
-                    register_message = f"Da chup tam {len(captured_images_buffer)}/5"
+                    register_message = f"Capturing... {len(captured_images_buffer)}/5"
                     if len(captured_images_buffer) == 5:
                         threading.Thread(target=upload_registration_packet_async).start()
-                elif not has_valid_face_in_current_frame:
-                    print("Gương mặt chưa đạt chuẩn, không thể chụp!")
 
     cam.close_device()
     detector.close()
