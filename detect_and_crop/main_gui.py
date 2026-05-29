@@ -4,7 +4,7 @@ import urllib.request
 import time
 import requests
 import threading
-import numpy as np                         # Sử dụng ma trận phẳng numpy cố định
+import numpy as np                     # Sử dụng ma trận phẳng numpy cố định
 import tkinter as tk                       
 from tkinter import simpledialog           
 import mediapipe as mp
@@ -83,8 +83,8 @@ class UsbCamera:
 # =====================================================================
 # ===== CẤU HÌNH HỆ THỐNG API =====
 # =====================================================================
-SERVER_URL = "http://172.20.10.3:8001/api/attendance/process" 
-REGISTER_URL = "http://172.20.10.3:8000/api/students"          
+SERVER_URL = "http://10.152.19.232:8001/api/attendance/process" 
+REGISTER_URL = "http://10.152.19.232:8000/api/students"          
 MODEL_FILE = 'face_detector.tflite'
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
 
@@ -118,8 +118,13 @@ def send_to_server_async(image_data):
     try:
         res = requests.post(SERVER_URL, files=files, timeout=10)
         data = res.json()
-        student_name = data.get("full_name", "Unknown")
-        student_id = data.get("student_id", "Unknown")
+        if "full_name" in data:
+            student_name = data.get("full_name")
+        elif "message" in data and "Điểm danh thành công: " in data["message"]:
+            student_name = data["message"].split("Điểm danh thành công: ")[1]
+        else:
+            student_name = "Unknown"
+        student_id = data.get("student_id") or data.get("studentId") or data.get("id") or "Unknown"
     except:
         student_name = "Server Error"
         student_id = ""
@@ -202,6 +207,9 @@ def main():
     while True:
         success, frame = cam.read_frame()
         if not success or frame is None: break
+
+        # 💡 FIX LẬT CAMERA TRÁI PHẢI (HIỆU ỨNG GƯƠNG) TẠI ĐÂY
+        frame = cv2.flip(frame, 1)
 
         # 1. TẠO KHUNG NỀN MÀU XÁM TỐI VỪA KHÍT 800x480 PIXELS
         interface = np.zeros((win_h, win_w, 3), dtype=np.uint8) + 28 
